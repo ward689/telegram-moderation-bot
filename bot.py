@@ -45,11 +45,11 @@ async def check_with_model(text):
         headers = {
             "Authorization": f"Bearer {OPENROUTER_API_KEY}",
             "Content-Type": "application/json",
-            "HTTP-Referer": "https://telegram-moderation-bot-sxrs.onrender.com",
+            "HTTP-Referer": "https://telegram-moderation-bot-wi7d.onrender.com",
             "X-Title": "Moderation Bot"
         }
         data = {
-            "model": "google/gemini-1.5-flash",
+            "model": "meta-llama/llama-3.2-3b-instruct:free",
             "messages": [
                 {
                     "role": "system",
@@ -100,7 +100,7 @@ def health():
     return "Бот работает", 200
 
 def keep_alive():
-    url = os.getenv("RENDER_EXTERNAL_URL", "https://telegram-moderation-bot-sxrs.onrender.com/")
+    url = os.getenv("RENDER_EXTERNAL_URL", "https://telegram-moderation-bot-wi7d.onrender.com/")
     while True:
         try:
             requests.get(url)
