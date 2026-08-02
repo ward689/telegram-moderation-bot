@@ -11,7 +11,7 @@ from flask import Flask
 import requests
 import threading
 
-TOKEN = os.getenv("TOKEN", "8430168047:AAG0ZnQkWmVGNIsSx-qaPYQbieSwc41nnao")
+TOKEN = os.getenv("TOKEN", "8637976880:AAHRVQaszGPPwMW3r8fI1JD5ruTH1zbXawM")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 OWNER_ID = "7823802800"
@@ -49,7 +49,7 @@ async def check_with_model(text):
             "X-Title": "Moderation Bot"
         }
         data = {
-            "model": "meta-llama/llama-3.2-3b-instruct:free",
+            "model": "microsoft/phi-3-mini-128k-instruct:free",
             "messages": [
                 {
                     "role": "system",
@@ -60,8 +60,8 @@ async def check_with_model(text):
 1. НЕ СЧИТАЙ буллингом обычный мат: сука, бля, хуй, нахуй, иди нахуй, пошёл нахуй, ебать, пизда, блять.
 2. СЧИТАЙ буллингом ТОЛЬКО ЭТО:
    - Личные оскорбления: ты бесполезен, ты никчёмный, ты ничтожество, ты тупой, ты дебил (как личное оскорбление)
-   - Угрозы: сдохни, умри, убейся, я тебя убью, ты покойник
-   - Унижения: тварь, шлюха, сукин сын (как личное оскорбление)
+   - Угрозы: сдохни, умри, убейся, я тебя убью, ты покойник, зарежу, пристрелю, изнасилую
+   - Унижения: тварь, шлюха, сукин сын, мразь
 
 Ответь ТОЛЬКО JSON: {"is_bullying": true/false, "confidence": 0-100, "reason": "причина"}
 """
@@ -277,7 +277,7 @@ async def show_rights(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await query.message.reply_text(full_text)
 
-# ===================== ПРОВЕРКА СООБЩЕНИЙ (ТОЛЬКО ИИ) =====================
+# ===================== ПРОВЕРКА СООБЩЕНИЙ =====================
 async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return
@@ -293,7 +293,7 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     text_lower = text.lower()
     
-    # ===== ОТПРАВЛЯЕМ В ИИ (БЕЗ БЫСТРОГО ФИЛЬТРА) =====
+    # ===== ОТПРАВЛЯЕМ В ИИ =====
     result = await check_with_model(text_lower)
     is_bullying = result.get("is_bullying", False)
     confidence = result.get("confidence", 0)
