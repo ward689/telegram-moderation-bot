@@ -4,7 +4,7 @@ import json
 import os
 import time
 import logging
-import google.genai as genai
+import httpx
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, MessageHandler, filters, ContextTypes, CommandHandler, CallbackQueryHandler
 from flask import Flask
@@ -13,7 +13,7 @@ import threading
 
 # ===================== НАСТРОЙКИ =====================
 TOKEN = os.getenv("TOKEN", "8430168047:AAG0ZnQkWmVGNIsSx-qaPYQbieSwc41nnao")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")  # КЛЮЧ ТОЛЬКО ИЗ ПЕРЕМЕННЫХ
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")  # Твой ключ OpenRouter
 
 OWNER_ID = "7823802800"
 ADMINS_FILE = "admins.json"
@@ -21,21 +21,46 @@ WARNS_FILE = "warns.json"
 MUTED_FILE = "muted.json"
 LOGS_FILE = "logs.txt"
 
-client = genai.Client(api_key=GEMINI_API_KEY)
-
-# ===================== ЛОГГИРОВАНИЕ =====================
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.FileHandler(LOGS_FILE, encoding="utf-8"),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
-
-def log_action(action, user, text=""):
-    logger.info(f"[{action}] @{user}: {text}")
+# ===================== HTTP КЛИЕНТ ДЛЯ OPENROUTER =====================
+async def check_with_nvidia(text):
+    try:
+        url = "https://openrouter.ai/api/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        data = {
+            "model": "nvidia/nemotron-3.5-content-safety",
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "Ты — модератор контента. Анализируй сообщение и верни ТОЛЬКО JSON: {\"is_bullying\": true/false, \"confidence\": 0-100, \"reason\": \"причина\"}. Не добавляй ничего лишнего."
+                },
+                {
+                    "role": "user",
+                    "content": text
+                }
+            ],
+            "temperature": 0.0,
+            "max_tokens": 100
+        }
+        
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(url, headers=headers, json=data)
+            result = response.json()
+            
+            if response.status_code == 200:
+                content = result["choices"][0]["message"]["content"]
+                json_match = re.search(r'\{.*\}', content, re.DOTALL)
+                if json_match:
+                    return json.loads(json_match.group())
+                return {"is_bullying": False, "confidence": 0}
+            else:
+                print(f"[NVIDIA ОШИБКА] {result}")
+                return {"is_bullying": False, "confidence": 0}
+    except Exception as e:
+        print(f"[NVIDIA ОШИБКА] {e}")
+        return {"is_bullying": False, "confidence": 0}
 
 # ===================== FLASK =====================
 flask_app = Flask(__name__)
@@ -82,14 +107,24 @@ def clean_muted():
 
 # ===================== БЫСТРЫЙ ФИЛЬТР =====================
 BAD_WORDS = [
-    "дурак", "идиот", "дебил", "тупой", "лох", "чмо",
-    "сука", "сучка", "бля", "блять", "блядь",
+    "дурак", "идиот", "дебил", "тупой", "лох", "чмо", "чмошник",
+    "мудак", "мудила", "говно", "дерьмо", "гнида", "мразь", "тварь",
+    "сволочь", "гад", "паскуда", "мерзавец", "подонок", "ублюдок",
+    "выродок", "нелюдь", "скотина", "животное", "отморозок",
+    "сука", "сучка", "бля", "блять", "блядь", "блядина",
     "хуй", "хуи", "хую", "хер", "пизда", "пиздец", "пизд",
-    "мудак", "мудила", "говно", "дерьмо",
+    "пидор", "пидорас", "гомик", "гей", "лесби", "лесбиянка",
+    "шлюха", "шлюшка", "курва", "проститутка",
     "сдохни", "убейся", "помер", "умри", "погибни", "вскройся",
-    "тварь", "шлюха", "шлюшка", "сын шлюхи", "сукин сын",
-    "пидор", "пидорас", "гомик", "лесби", "трах",
-    "спам", "реклама", "наркотики", "насилие"
+    "убить", "зарезать", "пристрелить", "перерезать",
+    "я тебя убью", "ты труп", "покойник", "ты покойник",
+    "тупица", "дегенерат", "даун", "олень", "баран", "осел",
+    "козел", "козлина", "свинья", "пёс", "шавка", "шакал",
+    "сын шлюхи", "сукин сын", "сучий потрох", "ебаный", "ёбаный",
+    "заебал", "заебало", "надоел", "уёбок", "еблан", "ебанат",
+    "спам", "реклама", "рекламирую", "рекламируем",
+    "наркотики", "наркота", "насилие", "убийство",
+    "иди нахуй", "пошёл нахуй", "отвали", "отъебись", "завали"
 ]
 
 # ===================== УРОВНИ =====================
@@ -235,41 +270,6 @@ async def show_rights(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await query.message.reply_text(full_text)
 
-# ===================== GEMINI =====================
-async def check_with_gemini(text):
-    try:
-        prompt = f"""
-Ты — модератор чата. Определи, является ли сообщение буллингом (угрозы, оскорбления личности, унижение, призывы к смерти).
-Обычный мат (сука, бля, хуй, иди нахуй) — НЕ СЧИТАЙ буллингом.
-Ответь ТОЛЬКО JSON: {{"is_bullying": true/false, "confidence": 0-100, "reason": "причина"}}
-Сообщение: {text}
-"""
-        response = client.models.generate_content(model="gemini-1.5-flash", contents=prompt)
-        json_str = re.search(r'\{.*\}', response.text, re.DOTALL)
-        if json_str:
-            return json.loads(json_str.group())
-        return {"is_bullying": False, "confidence": 0}
-    except Exception as e:
-        print(f"[GEMINI ОШИБКА] {e}")
-        return {"is_bullying": False, "confidence": 0}
-
-# ===================== МУТ =====================
-async def mute_user(chat_id, user_id, duration_minutes, reason="буллинг"):
-    until = time.time() + duration_minutes * 60
-    muted[str(user_id)] = until
-    save_json(MUTED_FILE, muted)
-    try:
-        await app.bot.restrict_chat_member(
-            chat_id=chat_id,
-            user_id=user_id,
-            permissions={"can_send_messages": False},
-            until_date=until
-        )
-        await app.bot.send_message(chat_id, f"🔇 @{user_id} замучен на {duration_minutes} минут. Причина: {reason}")
-        print(f"[МУТ] {user_id} на {duration_minutes} мин ({reason})")
-    except Exception as e:
-        print(f"Ошибка мута: {e}")
-
 # ===================== ПРОВЕРКА СООБЩЕНИЙ =====================
 async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
@@ -286,7 +286,7 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     text_lower = text.lower()
     
-    # ===== 1. БЫСТРЫЙ ФИЛЬТР (по списку) =====
+    # ===== 1. БЫСТРЫЙ ФИЛЬТР =====
     for word in BAD_WORDS:
         if word in text_lower:
             try:
@@ -297,13 +297,13 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 print(f"Ошибка удаления: {e}")
                 return
 
-    # ===== 2. GEMINI =====
-    result = await check_with_gemini(text_lower)
+    # ===== 2. NVIDIA NEMOTRON (через OpenRouter) =====
+    result = await check_with_nvidia(text_lower)
     is_bullying = result.get("is_bullying", False)
     confidence = result.get("confidence", 0)
     reason = result.get("reason", "неизвестна")
 
-    # ===== 3. НЕ УВЕРЕН — ПЕРЕСЫЛАЕМ ОПЕРАТОРУ =====
+    # ===== 3. НЕ УВЕРЕН — ПЕРЕСЫЛАЕМ =====
     if is_bullying and confidence < 70:
         try:
             await update.message.forward(chat_id=OWNER_ID)
@@ -318,7 +318,7 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_bullying and confidence >= 70:
         try:
             await update.message.delete()
-            log_action("УДАЛЕНО (Gemini)", user_id, text)
+            log_action("УДАЛЕНО (NVIDIA)", user_id, text)
             
             warns[user_id] = warns.get(user_id, 0) + 1
             save_json(WARNS_FILE, warns)
@@ -341,6 +341,22 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ===== 5. БЕЗОПАСНО =====
     log_action("ПРОПУЩЕНО", user_id, text)
+
+async def mute_user(chat_id, user_id, duration_minutes, reason="буллинг"):
+    until = time.time() + duration_minutes * 60
+    muted[str(user_id)] = until
+    save_json(MUTED_FILE, muted)
+    try:
+        await app.bot.restrict_chat_member(
+            chat_id=chat_id,
+            user_id=user_id,
+            permissions={"can_send_messages": False},
+            until_date=until
+        )
+        await app.bot.send_message(chat_id, f"🔇 @{user_id} замучен на {duration_minutes} минут. Причина: {reason}")
+        print(f"[МУТ] {user_id} на {duration_minutes} мин ({reason})")
+    except Exception as e:
+        print(f"Ошибка мута: {e}")
 
 # ===================== ВЛАДЕЛЕЦ =====================
 async def send_owner_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
