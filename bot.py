@@ -3,6 +3,7 @@ import re
 import json
 import os
 import time
+import logging
 import google.genai as genai
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, MessageHandler, filters, ContextTypes, CommandHandler, CallbackQueryHandler
@@ -10,15 +11,31 @@ from flask import Flask
 import requests
 import threading
 
+# ===================== НАСТРОЙКИ =====================
 TOKEN = os.getenv("TOKEN", "8430168047:AAG0ZnQkWmVGNIsSx-qaPYQbieSwc41nnao")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")  # Ключ только из переменных окружения
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")  # КЛЮЧ ТОЛЬКО ИЗ ПЕРЕМЕННЫХ
 
 OWNER_ID = "7823802800"
 ADMINS_FILE = "admins.json"
 WARNS_FILE = "warns.json"
 MUTED_FILE = "muted.json"
+LOGS_FILE = "logs.txt"
 
 client = genai.Client(api_key=GEMINI_API_KEY)
+
+# ===================== ЛОГГИРОВАНИЕ =====================
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.FileHandler(LOGS_FILE, encoding="utf-8"),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+def log_action(action, user, text=""):
+    logger.info(f"[{action}] @{user}: {text}")
 
 # ===================== FLASK =====================
 flask_app = Flask(__name__)
@@ -62,6 +79,18 @@ def clean_muted():
         if now > until:
             del muted[user]
     save_json(MUTED_FILE, muted)
+
+# ===================== БЫСТРЫЙ ФИЛЬТР =====================
+BAD_WORDS = [
+    "дурак", "идиот", "дебил", "тупой", "лох", "чмо",
+    "сука", "сучка", "бля", "блять", "блядь",
+    "хуй", "хуи", "хую", "хер", "пизда", "пиздец", "пизд",
+    "мудак", "мудила", "говно", "дерьмо",
+    "сдохни", "убейся", "помер", "умри", "погибни", "вскройся",
+    "тварь", "шлюха", "шлюшка", "сын шлюхи", "сукин сын",
+    "пидор", "пидорас", "гомик", "лесби", "трах",
+    "спам", "реклама", "наркотики", "насилие"
+]
 
 # ===================== УРОВНИ =====================
 LEVEL_RIGHTS = {
@@ -212,17 +241,17 @@ async def check_with_gemini(text):
         prompt = f"""
 Ты — модератор чата. Определи, является ли сообщение буллингом (угрозы, оскорбления личности, унижение, призывы к смерти).
 Обычный мат (сука, бля, хуй, иди нахуй) — НЕ СЧИТАЙ буллингом.
-Ответь ТОЛЬКО JSON: {{"is_bullying": true/false, "reason": "причина"}}
+Ответь ТОЛЬКО JSON: {{"is_bullying": true/false, "confidence": 0-100, "reason": "причина"}}
 Сообщение: {text}
 """
         response = client.models.generate_content(model="gemini-1.5-flash", contents=prompt)
         json_str = re.search(r'\{.*\}', response.text, re.DOTALL)
         if json_str:
             return json.loads(json_str.group())
-        return {"is_bullying": False}
+        return {"is_bullying": False, "confidence": 0}
     except Exception as e:
         print(f"[GEMINI ОШИБКА] {e}")
-        return {"is_bullying": False}
+        return {"is_bullying": False, "confidence": 0}
 
 # ===================== МУТ =====================
 async def mute_user(chat_id, user_id, duration_minutes, reason="буллинг"):
@@ -254,14 +283,42 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.delete()
         return
 
-    text = update.message.text.lower()
+    text = update.message.text
+    text_lower = text.lower()
     
-    # Проверка через Gemini
-    result = await check_with_gemini(text)
-    if result.get("is_bullying"):
+    # ===== 1. БЫСТРЫЙ ФИЛЬТР (по списку) =====
+    for word in BAD_WORDS:
+        if word in text_lower:
+            try:
+                await update.message.delete()
+                log_action("УДАЛЕНО (фильтр)", user_id, text)
+                return
+            except Exception as e:
+                print(f"Ошибка удаления: {e}")
+                return
+
+    # ===== 2. GEMINI =====
+    result = await check_with_gemini(text_lower)
+    is_bullying = result.get("is_bullying", False)
+    confidence = result.get("confidence", 0)
+    reason = result.get("reason", "неизвестна")
+
+    # ===== 3. НЕ УВЕРЕН — ПЕРЕСЫЛАЕМ ОПЕРАТОРУ =====
+    if is_bullying and confidence < 70:
+        try:
+            await update.message.forward(chat_id=OWNER_ID)
+            await update.message.delete()
+            log_action("ПЕРЕСЛАНО (не уверен)", user_id, text)
+            await update.message.reply_text(f"🤔 Не уверен, переслал оператору: {text}")
+        except Exception as e:
+            print(f"Ошибка пересылки: {e}")
+        return
+
+    # ===== 4. УВЕРЕННОЕ НАРУШЕНИЕ =====
+    if is_bullying and confidence >= 70:
         try:
             await update.message.delete()
-            print(f"[УДАЛЕНО] {update.message.text} (причина: {result.get('reason', 'неизвестна')})")
+            log_action("УДАЛЕНО (Gemini)", user_id, text)
             
             warns[user_id] = warns.get(user_id, 0) + 1
             save_json(WARNS_FILE, warns)
@@ -269,8 +326,9 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             await update.message.reply_text(
                 f"⚠️ ВАРН {count}/3 за буллинг!\n"
-                f"Сообщение: {update.message.text}\n"
-                f"Причина: {result.get('reason', 'неизвестна')}"
+                f"Сообщение: {text}\n"
+                f"Причина: {reason}\n"
+                f"Уверенность: {confidence}%"
             )
             
             if count >= 3:
@@ -279,6 +337,10 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 save_json(WARNS_FILE, warns)
         except Exception as e:
             print(f"Ошибка: {e}")
+        return
+
+    # ===== 5. БЕЗОПАСНО =====
+    log_action("ПРОПУЩЕНО", user_id, text)
 
 # ===================== ВЛАДЕЛЕЦ =====================
 async def send_owner_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
