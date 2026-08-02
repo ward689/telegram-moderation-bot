@@ -19,6 +19,7 @@ MUTED_FILE = "muted.json"
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
+# ===================== FLASK ДЛЯ HEALTH CHECK =====================
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
@@ -26,15 +27,16 @@ def health():
     return "Бот работает", 200
 
 def keep_alive():
-    url = os.getenv("RENDER_EXTERNAL_URL", "https://твой-сервис.onrender.com/")
+    url = os.getenv("RENDER_EXTERNAL_URL", "https://telegram-moderation-bot-sxrs.onrender.com/")
     while True:
         try:
             requests.get(url)
             print(f"[ПИНГ] {url}")
-        except Exception as e:
-            print(f"[ПИНГ ОШИБКА] {e}")
+        except:
+            pass
         time.sleep(600)
 
+# ===================== ЗАГРУЗКА ДАННЫХ =====================
 def load_json(file):
     if os.path.exists(file):
         with open(file, "r", encoding="utf-8") as f:
@@ -60,6 +62,7 @@ def clean_muted():
             del muted[user]
     save_json(MUTED_FILE, muted)
 
+# ===================== УРОВНИ И ПРАВА =====================
 LEVEL_RIGHTS = {
     1: "🔹 Удалять сообщения\n🔹 Следить за чатом",
     2: "🔹 Удалять сообщения\n🔹 Выдавать предупреждения",
@@ -80,7 +83,7 @@ LEVEL_NAMES = {
     7: "👑 Владелец"
 }
 
-# ===================== ОБРАБОТЧИКИ =====================
+# ===================== ПРИВЕТСТВИЕ =====================
 async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for member in update.message.new_chat_members:
         if member.id == context.bot.id:
@@ -90,7 +93,10 @@ async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
             f"Этот чат модерируется ботом с ИИ.\n"
             f"Пожалуйста, ознакомься с правилами сообщества."
         )
-        keyboard = [[InlineKeyboardButton("📜 Правила сообщества", url="https://telegra.ph/Pravila-soobshchestva-03-13-6")]]
+        keyboard = [
+            [InlineKeyboardButton("📜 Правила сообщества", url="https://telegra.ph/Pravila-soobshchestva-03-13-6")],
+            [InlineKeyboardButton("👑 Стать админом", callback_data="ask_admin")]
+        ]
         await update.message.reply_text(welcome_text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -106,6 +112,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(text)
 
+# ===================== АДМИН-КОМАНДЫ =====================
 async def give_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     if admins.get(user_id, 0) < 7:
@@ -198,9 +205,15 @@ async def show_rights(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await query.message.reply_text(full_text)
 
+# ===================== GEMINI (РАБОЧАЯ ВЕРСИЯ) =====================
 async def check_with_gemini(text):
     try:
-        prompt = f"Сообщение: {text}"
+        prompt = f"""
+Ты — модератор чата. Определи, является ли сообщение буллингом (угрозы, оскорбления личности, унижение, призывы к смерти).
+Обычный мат (сука, бля, хуй, иди нахуй) — НЕ СЧИТАЙ буллингом.
+Ответь ТОЛЬКО JSON: {{"is_bullying": true/false, "reason": "причина"}}
+Сообщение: {text}
+"""
         response = client.models.generate_content(model="gemini-1.5-flash", contents=prompt)
         json_str = re.search(r'\{.*\}', response.text, re.DOTALL)
         if json_str:
@@ -210,6 +223,7 @@ async def check_with_gemini(text):
         print(f"[GEMINI ОШИБКА] {e}")
         return {"is_bullying": False}
 
+# ===================== МУТ =====================
 async def mute_user(chat_id, user_id, duration_minutes, reason="буллинг"):
     until = time.time() + duration_minutes * 60
     muted[str(user_id)] = until
@@ -226,6 +240,7 @@ async def mute_user(chat_id, user_id, duration_minutes, reason="буллинг")
     except Exception as e:
         print(f"Ошибка мута: {e}")
 
+# ===================== ПРОВЕРКА СООБЩЕНИЙ =====================
 async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return
@@ -237,20 +252,26 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id in muted:
         await update.message.delete()
         return
+
     text = update.message.text.lower()
+    
+    # Проверка через Gemini
     result = await check_with_gemini(text)
     if result.get("is_bullying"):
         try:
             await update.message.delete()
             print(f"[УДАЛЕНО] {update.message.text} (причина: {result.get('reason', 'неизвестна')})")
+            
             warns[user_id] = warns.get(user_id, 0) + 1
             save_json(WARNS_FILE, warns)
             count = warns[user_id]
+            
             await update.message.reply_text(
                 f"⚠️ ВАРН {count}/3 за буллинг!\n"
                 f"Сообщение: {update.message.text}\n"
                 f"Причина: {result.get('reason', 'неизвестна')}"
             )
+            
             if count >= 3:
                 await mute_user(chat_id, int(user_id), 30, "3 варна за буллинг")
                 warns[user_id] = 0
@@ -258,6 +279,7 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             print(f"Ошибка: {e}")
 
+# ===================== ВЛАДЕЛЕЦ =====================
 async def send_owner_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     if user_id != OWNER_ID:
@@ -283,11 +305,8 @@ def main():
     
     print("Бот запущен. Ожидание сообщений...")
     
-    # Запускаем Flask (для Render Health Check)
-    import threading
+    # Flask + пинг
     threading.Thread(target=lambda: flask_app.run(host='0.0.0.0', port=10000), daemon=True).start()
-    
-    # Запускаем пинг (чтобы не уснул)
     threading.Thread(target=keep_alive, daemon=True).start()
     
     app.run_polling()
