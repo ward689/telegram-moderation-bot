@@ -3,36 +3,21 @@ import re
 import json
 import os
 import time
-import google.generativeai as genai
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, MessageHandler, filters, ContextTypes, CommandHandler, CallbackQueryHandler
 
-TOKEN = "8430168047:AAG0ZnQkWmVGNIsSx-qaPYQbieSwc41nnao"
-GEMINI_API_KEY = "AQ.Ab8RN6LmyqpA9V_Kky3m-Zj71j-OW2Bb1AbmUI19utcy9nKohA"
+TOKEN = os.getenv("TOKEN", "8430168047:AAG0ZnQkWmVGNIsSx-qaPYQbieSwc41nnao")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AQ.Ab8RN6LmyqpA9V_Kky3m-Zj71j-OW2Bb1AbmUI19utcy9nKohA")
 
 OWNER_ID = "7823802800"
 ADMINS_FILE = "admins.json"
 WARNS_FILE = "warns.json"
 MUTED_FILE = "muted.json"
 
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel(
-    "gemini-1.5-flash",
-    generation_config={"temperature": 0.0, "top_p": 0.9},
-    system_instruction="""
-Ты — модератор чата. Отвечай ТОЛЬКО JSON.
+# Новая библиотека Gemini
+import google.genai as genai
 
-ПРАВИЛА:
-1. НЕ СЧИТАЙ буллингом обычный мат: сука, бля, блять, блядь, хуй, хер, пизда, ебать, иди нахуй, пошёл нахуй, нахуй.
-2. СЧИТАЙ буллингом ТОЛЬКО ЭТО:
-   - Личные оскорбления: ты бесполезен, ты никчёмный, ты ничтожество, ты тупой, ты дебил (как личное оскорбление)
-   - Угрозы: сдохни, умри, убейся, я тебя убью, ты покойник
-   - Унижения: тварь, шлюха, сукин сын (как личное оскорбление)
-
-Формат ответа:
-{"is_bullying": true/false, "reason": "причина"}
-"""
-)
+client = genai.Client(api_key=GEMINI_API_KEY)
 
 def load_json(file):
     if os.path.exists(file):
@@ -79,23 +64,19 @@ LEVEL_NAMES = {
     7: "👑 Владелец"
 }
 
-# ========== ПРИВЕТСТВИЕ НОВЫХ УЧАСТНИКОВ ==========
 async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for member in update.message.new_chat_members:
         if member.id == context.bot.id:
             continue
-        
         welcome_text = (
             f"👋 Добро пожаловать, {member.first_name}!\n\n"
             f"Этот чат модерируется ботом с ИИ.\n"
             f"Пожалуйста, ознакомься с правилами сообщества."
         )
-        
         keyboard = [
             [InlineKeyboardButton("📜 Правила сообщества", url="https://telegra.ph/Pravila-soobshchestva-03-13-6")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        
         await update.message.reply_text(welcome_text, reply_markup=reply_markup)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -146,7 +127,6 @@ async def give_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_json(ADMINS_FILE, admins)
     level_name = LEVEL_NAMES.get(level, f"Уровень {level}")
     await update.message.reply_text(f"✅ @{target} назначен администратором уровня {level} — {level_name}.")
-    
     if level >= 5:
         keyboard = [[InlineKeyboardButton("📋 Мои права", callback_data=f"rights|{target}|{level}")]]
         await update.message.reply_text(
@@ -183,26 +163,20 @@ async def list_admins(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_rights(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    
     data = query.data.split("|")
     if len(data) < 3:
         await query.answer("❌ Ошибка.", show_alert=True)
         return
-    
     target_username = data[1]
     level = int(data[2])
     user_id = str(query.from_user.id)
-    
     if user_id != target_username and user_id != OWNER_ID:
         await query.answer("⛔ Это не ваша кнопка!", show_alert=True)
         return
-    
     level_name = LEVEL_NAMES.get(level, f"Уровень {level}")
     rights = LEVEL_RIGHTS.get(level, "Права не определены")
-    
     short_alert = f"📋 {level_name}\n{rights[:100]}"
     await query.answer(short_alert, show_alert=True)
-    
     full_text = (
         f"📋 ВАША ДОЛЖНОСТЬ: {level_name}\n\n"
         f"🔹 Ваши права:\n{rights}\n\n"
@@ -214,7 +188,10 @@ async def show_rights(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def check_with_gemini(text):
     try:
         prompt = f"Сообщение: {text}"
-        response = model.generate_content(prompt)
+        response = client.models.generate_content(
+            model="gemini-1.5-flash",
+            contents=prompt
+        )
         json_str = re.search(r'\{.*\}', response.text, re.DOTALL)
         if json_str:
             return json.loads(json_str.group())
@@ -244,14 +221,12 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     chat_id = update.effective_chat.id
     user_id = str(update.effective_user.id)
-
     if user_id in admins:
         return
     clean_muted()
     if user_id in muted:
         await update.message.delete()
         return
-
     text = update.message.text.lower()
     result = await check_with_gemini(text)
     if result.get("is_bullying"):
@@ -286,20 +261,14 @@ async def send_owner_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE)
 def main():
     global app
     app = Application.builder().token(TOKEN).build()
-
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("giveadmin", give_admin))
     app.add_handler(CommandHandler("removeadmin", remove_admin))
     app.add_handler(CommandHandler("admins", list_admins))
-
     app.add_handler(CallbackQueryHandler(show_rights, pattern="^rights\\|"))
-
-    # ПРИВЕТСТВИЕ НОВЫХ УЧАСТНИКОВ
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome_new_member))
-
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.User(OWNER_ID), send_owner_welcome))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, check_message))
-
     print("Бот запущен. Ожидание сообщений...")
     app.run_polling()
 
