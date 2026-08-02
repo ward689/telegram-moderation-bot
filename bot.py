@@ -3,20 +3,19 @@ import re
 import json
 import os
 import time
+import google.genai as genai
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, MessageHandler, filters, ContextTypes, CommandHandler, CallbackQueryHandler
 
+# ===================== НАСТРОЙКИ =====================
 TOKEN = os.getenv("TOKEN", "8430168047:AAG0ZnQkWmVGNIsSx-qaPYQbieSwc41nnao")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AQ.Ab8RN6LmyqpA9V_Kky3m-Zj71j-OW2Bb1AbmUI19utcy9nKohA")
-
 OWNER_ID = "7823802800"
 ADMINS_FILE = "admins.json"
 WARNS_FILE = "warns.json"
 MUTED_FILE = "muted.json"
 
-# Новая библиотека Gemini
-import google.genai as genai
-
+# ===================== ИНИЦИАЛИЗАЦИЯ =====================
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 def load_json(file):
@@ -44,6 +43,7 @@ def clean_muted():
             del muted[user]
     save_json(MUTED_FILE, muted)
 
+# ===================== УРОВНИ И ПРАВА =====================
 LEVEL_RIGHTS = {
     1: "🔹 Удалять сообщения\n🔹 Следить за чатом",
     2: "🔹 Удалять сообщения\n🔹 Выдавать предупреждения",
@@ -64,6 +64,7 @@ LEVEL_NAMES = {
     7: "👑 Владелец"
 }
 
+# ===================== ОБРАБОТЧИКИ =====================
 async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for member in update.message.new_chat_members:
         if member.id == context.bot.id:
@@ -73,11 +74,8 @@ async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
             f"Этот чат модерируется ботом с ИИ.\n"
             f"Пожалуйста, ознакомься с правилами сообщества."
         )
-        keyboard = [
-            [InlineKeyboardButton("📜 Правила сообщества", url="https://telegra.ph/Pravila-soobshchestva-03-13-6")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text(welcome_text, reply_markup=reply_markup)
+        keyboard = [[InlineKeyboardButton("📜 Правила сообщества", url="https://telegra.ph/Pravila-soobshchestva-03-13-6")]]
+        await update.message.reply_text(welcome_text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -180,18 +178,14 @@ async def show_rights(update: Update, context: ContextTypes.DEFAULT_TYPE):
     full_text = (
         f"📋 ВАША ДОЛЖНОСТЬ: {level_name}\n\n"
         f"🔹 Ваши права:\n{rights}\n\n"
-        f"⚙️ КАКИЕ ПРАВА ВЫДАТЬ В TELEGRAM:\n"
-        f"{rights}"
+        f"⚙️ КАКИЕ ПРАВА ВЫДАТЬ В TELEGRAM:\n{rights}"
     )
     await query.message.reply_text(full_text)
 
 async def check_with_gemini(text):
     try:
         prompt = f"Сообщение: {text}"
-        response = client.models.generate_content(
-            model="gemini-1.5-flash",
-            contents=prompt
-        )
+        response = client.models.generate_content(model="gemini-1.5-flash", contents=prompt)
         json_str = re.search(r'\{.*\}', response.text, re.DOTALL)
         if json_str:
             return json.loads(json_str.group())
@@ -258,6 +252,7 @@ async def send_owner_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE)
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
+# ===================== ЗАПУСК =====================
 def main():
     global app
     app = Application.builder().token(TOKEN).build()
