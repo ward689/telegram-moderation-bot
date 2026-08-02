@@ -11,7 +11,6 @@ from flask import Flask
 import requests
 import threading
 
-# ===================== НАСТРОЙКИ =====================
 TOKEN = os.getenv("TOKEN", "8430168047:AAG0ZnQkWmVGNIsSx-qaPYQbieSwc41nnao")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
@@ -54,11 +53,22 @@ async def check_with_model(text):
             "messages": [
                 {
                     "role": "system",
-                    "content": "Ты — модератор контента. Анализируй сообщение и верни ТОЛЬКО JSON: {\"is_bullying\": true/false, \"confidence\": 0-100, \"reason\": \"причина\"}. Не добавляй ничего лишнего."
+                    "content": """
+Ты — модератор чата. Определи, является ли сообщение буллингом.
+
+ПРАВИЛА:
+1. НЕ СЧИТАЙ буллингом обычный мат: сука, бля, хуй, нахуй, иди нахуй, пошёл нахуй, ебать, пизда, блять.
+2. СЧИТАЙ буллингом ТОЛЬКО ЭТО:
+   - Личные оскорбления: ты бесполезен, ты никчёмный, ты ничтожество, ты тупой, ты дебил (как личное оскорбление)
+   - Угрозы: сдохни, умри, убейся, я тебя убью, ты покойник
+   - Унижения: тварь, шлюха, сукин сын (как личное оскорбление)
+
+Ответь ТОЛЬКО JSON: {"is_bullying": true/false, "confidence": 0-100, "reason": "причина"}
+"""
                 },
                 {
                     "role": "user",
-                    "content": text
+                    "content": f"Сообщение: {text}"
                 }
             ],
             "temperature": 0.0,
@@ -124,15 +134,6 @@ def clean_muted():
         if now > until:
             del muted[user]
     save_json(MUTED_FILE, muted)
-
-# ===================== БЫСТРЫЙ ФИЛЬТР =====================
-BAD_WORDS = [
-    "сдохни", "убейся", "умри", "погибни", "вскройся",
-    "я тебя убью", "ты труп", "покойник", "ты покойник",
-    "зарежу", "пристрелю", "перережу", "убить",
-    "мразь", "тварь", "шлюха", "шлюшка", "сукин сын",
-    "сын шлюхи", "проститутка", "пидор", "пидорас"
-]
 
 LEVEL_RIGHTS = {
     1: "🔹 Удалять сообщения\n🔹 Следить за чатом",
@@ -276,7 +277,7 @@ async def show_rights(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await query.message.reply_text(full_text)
 
-# ===================== ПРОВЕРКА СООБЩЕНИЙ =====================
+# ===================== ПРОВЕРКА СООБЩЕНИЙ (ТОЛЬКО ИИ) =====================
 async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return
@@ -292,24 +293,13 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     text_lower = text.lower()
     
-    # ===== 1. БЫСТРЫЙ ФИЛЬТР =====
-    for word in BAD_WORDS:
-        if word in text_lower:
-            try:
-                await update.message.delete()
-                log_action("УДАЛЕНО (фильтр)", user_id, text)
-                return
-            except Exception as e:
-                print(f"Ошибка удаления: {e}")
-                return
-
-    # ===== 2. OPENROUTER =====
+    # ===== ОТПРАВЛЯЕМ В ИИ (БЕЗ БЫСТРОГО ФИЛЬТРА) =====
     result = await check_with_model(text_lower)
     is_bullying = result.get("is_bullying", False)
     confidence = result.get("confidence", 0)
     reason = result.get("reason", "неизвестна")
 
-    # ===== 3. НЕ УВЕРЕН — ПЕРЕСЫЛАЕМ =====
+    # ===== НЕ УВЕРЕН — ПЕРЕСЫЛАЕМ ОПЕРАТОРУ =====
     if is_bullying and confidence < 70:
         try:
             await update.message.forward(chat_id=OWNER_ID)
@@ -320,11 +310,11 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             print(f"Ошибка пересылки: {e}")
         return
 
-    # ===== 4. УВЕРЕННОЕ НАРУШЕНИЕ =====
+    # ===== УВЕРЕННОЕ НАРУШЕНИЕ =====
     if is_bullying and confidence >= 70:
         try:
             await update.message.delete()
-            log_action("УДАЛЕНО (OpenRouter)", user_id, text)
+            log_action("УДАЛЕНО (ИИ)", user_id, text)
             
             warns[user_id] = warns.get(user_id, 0) + 1
             save_json(WARNS_FILE, warns)
@@ -345,7 +335,7 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             print(f"Ошибка: {e}")
         return
 
-    # ===== 5. БЕЗОПАСНО =====
+    # ===== БЕЗОПАСНО =====
     log_action("ПРОПУЩЕНО", user_id, text)
 
 async def mute_user(chat_id, user_id, duration_minutes, reason="буллинг"):
