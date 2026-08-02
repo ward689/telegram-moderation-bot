@@ -20,16 +20,32 @@ WARNS_FILE = "warns.json"
 MUTED_FILE = "muted.json"
 LOGS_FILE = "logs.txt"
 
+# ===================== ЛОГГИРОВАНИЕ =====================
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.FileHandler(LOGS_FILE, encoding="utf-8"),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+def log_action(action, user, text=""):
+    logger.info(f"[{action}] @{user}: {text}")
+
 # ===================== HTTP КЛИЕНТ ДЛЯ OPENROUTER =====================
 async def check_with_nvidia(text):
     try:
         url = "https://openrouter.ai/api/v1/chat/completions"
         headers = {
             "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://telegram-moderation-bot-sxrs.onrender.com",
+            "X-Title": "Moderation Bot"
         }
         data = {
-            "model": "nvidia/nemotron-3.5-content-safety",
+            "model": "google/gemini-1.5-flash",  # Замена (работает бесплатно)
             "messages": [
                 {
                     "role": "system",
@@ -44,7 +60,7 @@ async def check_with_nvidia(text):
             "max_tokens": 100
         }
         
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=15.0) as client:
             response = await client.post(url, headers=headers, json=data)
             result = response.json()
             
@@ -55,10 +71,10 @@ async def check_with_nvidia(text):
                     return json.loads(json_match.group())
                 return {"is_bullying": False, "confidence": 0}
             else:
-                print(f"[NVIDIA ОШИБКА] {result}")
+                print(f"[OPENROUTER ОШИБКА] {result}")
                 return {"is_bullying": False, "confidence": 0}
     except Exception as e:
-        print(f"[NVIDIA ОШИБКА] {e}")
+        print(f"[OPENROUTER ОШИБКА] {e}")
         return {"is_bullying": False, "confidence": 0}
 
 # ===================== FLASK =====================
@@ -104,19 +120,15 @@ def clean_muted():
             del muted[user]
     save_json(MUTED_FILE, muted)
 
-# ===================== БЫСТРЫЙ ФИЛЬТР (ТОЛЬКО ЯВНЫЕ УГРОЗЫ И ОСКОРБЛЕНИЯ) =====================
+# ===================== БЫСТРЫЙ ФИЛЬТР =====================
 BAD_WORDS = [
-    # УГРОЗЫ
     "сдохни", "убейся", "умри", "погибни", "вскройся",
     "я тебя убью", "ты труп", "покойник", "ты покойник",
     "зарежу", "пристрелю", "перережу", "убить",
-    
-    # ЖЁСТКИЕ ОСКОРБЛЕНИЯ ЛИЧНОСТИ
     "мразь", "тварь", "шлюха", "шлюшка", "сукин сын",
     "сын шлюхи", "проститутка", "пидор", "пидорас"
 ]
 
-# ===================== УРОВНИ =====================
 LEVEL_RIGHTS = {
     1: "🔹 Удалять сообщения\n🔹 Следить за чатом",
     2: "🔹 Удалять сообщения\n🔹 Выдавать предупреждения",
@@ -275,7 +287,7 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     text_lower = text.lower()
     
-    # ===== 1. БЫСТРЫЙ ФИЛЬТР (только угрозы и жесткие оскорбления) =====
+    # ===== 1. БЫСТРЫЙ ФИЛЬТР =====
     for word in BAD_WORDS:
         if word in text_lower:
             try:
@@ -286,7 +298,7 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 print(f"Ошибка удаления: {e}")
                 return
 
-    # ===== 2. NVIDIA NEMOTRON (через OpenRouter) =====
+    # ===== 2. OPENROUTER =====
     result = await check_with_nvidia(text_lower)
     is_bullying = result.get("is_bullying", False)
     confidence = result.get("confidence", 0)
@@ -307,7 +319,7 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_bullying and confidence >= 70:
         try:
             await update.message.delete()
-            log_action("УДАЛЕНО (NVIDIA)", user_id, text)
+            log_action("УДАЛЕНО (OpenRouter)", user_id, text)
             
             warns[user_id] = warns.get(user_id, 0) + 1
             save_json(WARNS_FILE, warns)
@@ -347,7 +359,6 @@ async def mute_user(chat_id, user_id, duration_minutes, reason="буллинг")
     except Exception as e:
         print(f"Ошибка мута: {e}")
 
-# ===================== ВЛАДЕЛЕЦ =====================
 async def send_owner_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     if user_id != OWNER_ID:
@@ -358,7 +369,6 @@ async def send_owner_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE)
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-# ===================== ЗАПУСК =====================
 def main():
     global app
     app = Application.builder().token(TOKEN).build()
@@ -373,7 +383,6 @@ def main():
     
     print("Бот запущен. Ожидание сообщений...")
     
-    # Flask + пинг
     threading.Thread(target=lambda: flask_app.run(host='0.0.0.0', port=10000), daemon=True).start()
     threading.Thread(target=keep_alive, daemon=True).start()
     
