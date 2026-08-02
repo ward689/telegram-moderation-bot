@@ -6,8 +6,10 @@ import time
 import google.genai as genai
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, MessageHandler, filters, ContextTypes, CommandHandler, CallbackQueryHandler
+from flask import Flask
+import requests
+import threading
 
-# ===================== НАСТРОЙКИ =====================
 TOKEN = os.getenv("TOKEN", "8430168047:AAG0ZnQkWmVGNIsSx-qaPYQbieSwc41nnao")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AQ.Ab8RN6LmyqpA9V_Kky3m-Zj71j-OW2Bb1AbmUI19utcy9nKohA")
 OWNER_ID = "7823802800"
@@ -15,8 +17,23 @@ ADMINS_FILE = "admins.json"
 WARNS_FILE = "warns.json"
 MUTED_FILE = "muted.json"
 
-# ===================== ИНИЦИАЛИЗАЦИЯ =====================
 client = genai.Client(api_key=GEMINI_API_KEY)
+
+flask_app = Flask(__name__)
+
+@flask_app.route('/')
+def health():
+    return "Бот работает", 200
+
+def keep_alive():
+    url = os.getenv("RENDER_EXTERNAL_URL", "https://твой-сервис.onrender.com/")
+    while True:
+        try:
+            requests.get(url)
+            print(f"[ПИНГ] {url}")
+        except Exception as e:
+            print(f"[ПИНГ ОШИБКА] {e}")
+        time.sleep(600)
 
 def load_json(file):
     if os.path.exists(file):
@@ -43,7 +60,6 @@ def clean_muted():
             del muted[user]
     save_json(MUTED_FILE, muted)
 
-# ===================== УРОВНИ И ПРАВА =====================
 LEVEL_RIGHTS = {
     1: "🔹 Удалять сообщения\n🔹 Следить за чатом",
     2: "🔹 Удалять сообщения\n🔹 Выдавать предупреждения",
@@ -264,7 +280,16 @@ def main():
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome_new_member))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.User(OWNER_ID), send_owner_welcome))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, check_message))
+    
     print("Бот запущен. Ожидание сообщений...")
+    
+    # Запускаем Flask (для Render Health Check)
+    import threading
+    threading.Thread(target=lambda: flask_app.run(host='0.0.0.0', port=10000), daemon=True).start()
+    
+    # Запускаем пинг (чтобы не уснул)
+    threading.Thread(target=keep_alive, daemon=True).start()
+    
     app.run_polling()
 
 if __name__ == "__main__":
