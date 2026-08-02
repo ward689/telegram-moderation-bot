@@ -11,7 +11,8 @@ import requests
 import threading
 
 TOKEN = os.getenv("TOKEN", "8430168047:AAG0ZnQkWmVGNIsSx-qaPYQbieSwc41nnao")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AQ.Ab8RN6LmyqpA9V_Kky3m-Zj71j-OW2Bb1AbmUI19utcy9nKohA")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")  # Ключ только из переменных окружения
+
 OWNER_ID = "7823802800"
 ADMINS_FILE = "admins.json"
 WARNS_FILE = "warns.json"
@@ -19,7 +20,7 @@ MUTED_FILE = "muted.json"
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
-# ===================== FLASK ДЛЯ HEALTH CHECK =====================
+# ===================== FLASK =====================
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
@@ -62,7 +63,7 @@ def clean_muted():
             del muted[user]
     save_json(MUTED_FILE, muted)
 
-# ===================== УРОВНИ И ПРАВА =====================
+# ===================== УРОВНИ =====================
 LEVEL_RIGHTS = {
     1: "🔹 Удалять сообщения\n🔹 Следить за чатом",
     2: "🔹 Удалять сообщения\n🔹 Выдавать предупреждения",
@@ -205,7 +206,7 @@ async def show_rights(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await query.message.reply_text(full_text)
 
-# ===================== GEMINI (РАБОЧАЯ ВЕРСИЯ) =====================
+# ===================== GEMINI =====================
 async def check_with_gemini(text):
     try:
         prompt = f"""
