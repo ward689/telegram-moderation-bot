@@ -11,6 +11,7 @@ from flask import Flask
 import requests
 import threading
 
+# ===================== НАСТРОЙКИ =====================
 TOKEN = os.getenv("TOKEN", "8430168047:AAG0ZnQkWmVGNIsSx-qaPYQbieSwc41nnao")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
@@ -35,7 +36,11 @@ def log_action(action, user, text=""):
     logger.info(f"[{action}] @{user}: {text}")
 
 # ===================== HTTP КЛИЕНТ ДЛЯ OPENROUTER =====================
-async def check_with_nvidia(text):
+async def check_with_model(text):
+    if not OPENROUTER_API_KEY:
+        print("[ОШИБКА] OPENROUTER_API_KEY не задан")
+        return {"is_bullying": False, "confidence": 0}
+    
     try:
         url = "https://openrouter.ai/api/v1/chat/completions"
         headers = {
@@ -45,7 +50,7 @@ async def check_with_nvidia(text):
             "X-Title": "Moderation Bot"
         }
         data = {
-            "model": "google/gemini-1.5-flash",  # Замена (работает бесплатно)
+            "model": "google/gemini-1.5-flash",
             "messages": [
                 {
                     "role": "system",
@@ -71,7 +76,7 @@ async def check_with_nvidia(text):
                     return json.loads(json_match.group())
                 return {"is_bullying": False, "confidence": 0}
             else:
-                print(f"[OPENROUTER ОШИБКА] {result}")
+                print(f"[OPENROUTER ОШИБКА] {response.status_code}: {result}")
                 return {"is_bullying": False, "confidence": 0}
     except Exception as e:
         print(f"[OPENROUTER ОШИБКА] {e}")
@@ -299,7 +304,7 @@ async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
 
     # ===== 2. OPENROUTER =====
-    result = await check_with_nvidia(text_lower)
+    result = await check_with_model(text_lower)
     is_bullying = result.get("is_bullying", False)
     confidence = result.get("confidence", 0)
     reason = result.get("reason", "неизвестна")
